@@ -1,0 +1,17 @@
+{
+  "name": "ai-payment-paypal",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AI-Powered Freelancer Payment Manager with PayPal Integration",
+  "scripts": {
+    "start": "node server/index.js",
+    "server": "npm run start --prefix server",
+    "client": "npm run dev --prefix client",
+    "build": "npm run build --prefix client",
+    "seed": "npm run seed --prefix server"
+  },
+  "keywords": ["freelancer", "payment", "paypal", "ai", "invoice"],
+  "author": "",
+  "license": "ISC"
+}
+
