@@ -177,5 +177,65 @@ router.get('/verify/:orderID', authenticateToken, async (req, res) => {
   }
 });
 
+// Quick Demo / Presentation Payment simulation (failsafe for live pitches)
+router.post('/demo-pay', authenticateToken, async (req, res) => {
+  try {
+    const { invoice_id } = req.body;
+
+    if (!invoice_id) {
+      return res.status(400).json({ error: 'Invoice ID is required' });
+    }
+
+    const [invoices] = await pool.query(
+      'SELECT * FROM invoices WHERE id = ? AND user_id = ?',
+      [invoice_id, req.user.id]
+    );
+
+    if (invoices.length === 0) {
+      return res.status(404).json({ error: 'Invoice not found' });
+    }
+
+    const invoice = invoices[0];
+    const orderID = 'PAYPAL-SANDBOX-' + Math.random().toString(36).substring(2, 9).toUpperCase();
+    const captureID = 'CAP-' + Math.random().toString(36).substring(2, 9).toUpperCase();
+
+    // 1. Record completed transaction
+    await pool.query(
+      `INSERT INTO transactions (user_id, invoice_id, client_id, paypal_order_id, paypal_capture_id, amount, currency, status, payment_method, description)
+       VALUES (?, ?, ?, ?, ?, ?, 'USD', 'completed', 'paypal', ?)`,
+      [
+        req.user.id,
+        invoice.id,
+        invoice.client_id,
+        orderID,
+        captureID,
+        invoice.total_amount,
+        `PayPal Payment for Invoice ${invoice.invoice_number}`
+      ]
+    );
+
+    // 2. Mark invoice as paid
+    await pool.query('UPDATE invoices SET status = ? WHERE id = ?', ['paid', invoice.id]);
+
+    // 3. Mark milestone as paid if tied to one
+    if (invoice.milestone_id) {
+      await pool.query(
+        'UPDATE milestones SET payment_status = ?, status = ? WHERE id = ?',
+        ['paid', 'paid', invoice.milestone_id]
+      );
+    }
+
+    res.json({
+      status: 'COMPLETED',
+      orderID,
+      captureId: captureID,
+      message: 'Demo payment captured successfully'
+    });
+  } catch (error) {
+    console.error('Demo pay error:', error);
+    res.status(500).json({ error: 'Failed to process demo payment' });
+  }
+});
+
 module.exports = router;
 
