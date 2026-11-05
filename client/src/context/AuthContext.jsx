@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import axios from 'axios';
+import api from '../utils/api';
 
 export const AuthContext = createContext(null);
 
@@ -32,7 +32,7 @@ export const AuthProvider = ({ children }) => {
     setLoading(true);
     setError(null);
     try {
-      const res = await axios.post('http://localhost:5000/api/auth/login', {
+      const res = await api.post('/auth/login', {
         email,
         password,
       });
@@ -57,7 +57,7 @@ export const AuthProvider = ({ children }) => {
     setError(null);
     try {
       const { name, email, password, businessName } = typeof data === 'object' && !Array.isArray(data) ? data : { name: arguments[0], email: arguments[1], password: arguments[2] };
-      const res = await axios.post('http://localhost:5000/api/auth/register', {
+      const res = await api.post('/auth/register', {
         name,
         email,
         password,

@@ -15,7 +15,7 @@ const dashboardRoutes = require('./routes/dashboard');
 const aiRoutes = require('./routes/ai');
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5001;
 
 // Middleware
 app.use(cors());
@@ -28,20 +28,23 @@ app.use((req, res, next) => {
   next();
 });
 
-// API Routes
-app.use('/api/auth', authRoutes);
-app.use('/api/clients', clientRoutes);
-app.use('/api/projects', projectRoutes);
-app.use('/api/milestones', milestoneRoutes);
-app.use('/api/invoices', invoiceRoutes);
-app.use('/api/payments', paymentRoutes);
-app.use('/api/dashboard', dashboardRoutes);
-app.use('/api/ai', aiRoutes);
-
-// Health check
-app.get('/api/health', (req, res) => {
+// API Router
+const apiRouter = express.Router();
+apiRouter.use('/auth', authRoutes);
+apiRouter.use('/clients', clientRoutes);
+apiRouter.use('/projects', projectRoutes);
+apiRouter.use('/milestones', milestoneRoutes);
+apiRouter.use('/invoices', invoiceRoutes);
+apiRouter.use('/payments', paymentRoutes);
+apiRouter.use('/dashboard', dashboardRoutes);
+apiRouter.use('/ai', aiRoutes);
+apiRouter.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
+
+// Mount on both /api and / to handle direct calls and path-stripped rewrites
+app.use('/api', apiRouter);
+app.use('/', apiRouter);
 
 // Error handling middleware
 app.use((err, req, res, next) => {
@@ -62,5 +65,9 @@ async function start() {
   }
 }
 
-start();
+if (require.main === module || !process.env.VERCEL) {
+  start();
+}
+
+module.exports = app;
 

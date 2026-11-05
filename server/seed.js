@@ -7,6 +7,14 @@ async function seed() {
     await initializeDatabase();
     console.log('🌱 Seeding database...');
 
+    // Clear old demo records for clean idempotent seeding
+    await pool.query('DELETE FROM transactions');
+    await pool.query('DELETE FROM reminders');
+    await pool.query('DELETE FROM invoices');
+    await pool.query('DELETE FROM milestones');
+    await pool.query('DELETE FROM projects');
+    await pool.query('DELETE FROM clients');
+
     // Create demo user
     const hashedPassword = await bcrypt.hash('demo123', 10);
     const [userResult] = await pool.query(

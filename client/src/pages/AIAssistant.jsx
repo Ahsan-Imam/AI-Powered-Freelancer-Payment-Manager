@@ -4,30 +4,31 @@ import api from '../utils/api';
 const formatMessage = (text) => {
   if (!text) return '';
   const lines = text.split('\n');
-  return lines.map((line, i) => {
+  return lines.map((line) => {
     // Bold
-    let formatted = line.replace(/\*\*(.*?)\*\*/g, '<strong class="font-semibold">$1</strong>');
+    let formatted = line.replace(/\*\*(.*?)\*\*/g, '<strong class="font-semibold text-gray-900">$1</strong>');
     // Bullet points
-    if (/^\s*[-•]\s/.test(formatted)) {
-      formatted = formatted.replace(/^\s*[-•]\s/, '');
-      return `<li key="${i}" class="ml-4 list-disc">${formatted}</li>`;
+    if (/^\s*[-•*]\s/.test(formatted)) {
+      formatted = formatted.replace(/^\s*[-•*]\s/, '');
+      return `<div class="flex items-start my-1 pl-2"><span class="mr-2 text-indigo-500 font-bold">•</span><span class="flex-1">${formatted}</span></div>`;
     }
     // Numbered list
-    if (/^\s*\d+\.\s/.test(formatted)) {
-      return `<li key="${i}" class="ml-4 list-decimal">${formatted.replace(/^\s*\d+\.\s/, '')}</li>`;
+    const numMatch = formatted.match(/^\s*(\d+)\.\s+(.*)/);
+    if (numMatch) {
+      return `<div class="flex items-start my-1 pl-2"><span class="mr-2 text-indigo-600 font-semibold">${numMatch[1]}.</span><span class="flex-1">${numMatch[2]}</span></div>`;
     }
     // Headers
     if (/^###\s/.test(formatted)) {
-      return `<h4 key="${i}" class="font-bold text-md mt-2 mb-1">${formatted.replace(/^###\s/, '')}</h4>`;
+      return `<h4 class="font-bold text-md text-gray-900 mt-3 mb-1">${formatted.replace(/^###\s/, '')}</h4>`;
     }
     if (/^##\s/.test(formatted)) {
-      return `<h3 key="${i}" class="font-bold text-lg mt-3 mb-1">${formatted.replace(/^##\s/, '')}</h3>`;
+      return `<h3 class="font-bold text-lg text-gray-900 mt-4 mb-2">${formatted.replace(/^##\s/, '')}</h3>`;
     }
     if (/^#\s/.test(formatted)) {
-      return `<h2 key="${i}" class="font-bold text-xl mt-3 mb-1">${formatted.replace(/^#\s/, '')}</h2>`;
+      return `<h2 class="font-bold text-xl text-gray-900 mt-4 mb-2">${formatted.replace(/^#\s/, '')}</h2>`;
     }
-    if (formatted.trim() === '') return `<br key="${i}" />`;
-    return `<p key="${i}" class="mb-1">${formatted}</p>`;
+    if (formatted.trim() === '') return `<div class="h-2"></div>`;
+    return `<p class="mb-1 leading-relaxed">${formatted}</p>`;
   }).join('');
 };
 

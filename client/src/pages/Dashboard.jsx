@@ -2,16 +2,28 @@ import React, { useState, useEffect } from 'react';
 import api from '../utils/api';
 
 /* ─── helpers ─── */
-const formatCurrency = (amount) =>
-  new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(amount || 0);
+const formatCurrency = (amount) => {
+  if (typeof amount === 'object' && amount !== null) {
+    amount = amount.total || amount.amount || 0;
+  }
+  const num = typeof amount === 'number' ? amount : Number(amount || 0);
+  if (isNaN(num)) return '$0.00';
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(num);
+};
 
 const formatDate = (dateStr) => {
   if (!dateStr) return '—';
-  return new Date(dateStr).toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  });
+  try {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return '—';
+    return d.toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    });
+  } catch {
+    return '—';
+  }
 };
 
 const statusBadge = (status) => {
@@ -27,7 +39,7 @@ const statusBadge = (status) => {
   const cls = map[(status || '').toLowerCase()] || 'bg-gray-100 text-gray-800';
   return (
     <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium capitalize ${cls}`}>
-      {status}
+      {status || 'pending'}
     </span>
   );
 };
@@ -67,12 +79,15 @@ const SkeletonChart = () => (
 );
 
 /* ─── stat card ─── */
-const StatCard = ({ icon, label, value, color, bgColor, iconBg }) => (
+const StatCard = ({ icon, label, value, sub, color, iconBg }) => (
   <div className="bg-white rounded-xl shadow-sm hover:shadow-md transition-shadow p-6">
     <div className="flex items-center justify-between">
       <div>
         <p className="text-sm font-medium text-gray-500">{label}</p>
-        <p className={`text-2xl font-bold mt-1 ${color}`}>{value}</p>
+        <p className={`text-2xl font-bold mt-1 ${color}`}>
+          {typeof value === 'object' && value !== null ? JSON.stringify(value) : value}
+        </p>
+        {sub && <p className="text-xs text-gray-400 mt-1">{sub}</p>}
       </div>
       <div className={`p-3 rounded-lg ${iconBg}`}>
         {icon}
@@ -83,14 +98,18 @@ const StatCard = ({ icon, label, value, color, bgColor, iconBg }) => (
 
 /* ─── bar chart ─── */
 const BarChart = ({ data = [] }) => {
-  if (!data.length) return null;
-  const maxVal = Math.max(...data.map((d) => d.amount), 1);
+  if (!Array.isArray(data) || !data.length) return null;
+  const normalizedData = data.map((d) => ({
+    month: d.month || '—',
+    amount: Number(d.amount ?? d.total ?? 0),
+  }));
+  const maxVal = Math.max(...normalizedData.map((d) => d.amount), 1);
 
   return (
     <div className="bg-white rounded-xl shadow-sm p-6">
       <h3 className="text-lg font-semibold text-gray-800 mb-6">Monthly Earnings</h3>
       <div className="flex items-end gap-2 h-56">
-        {data.map((item, i) => {
+        {normalizedData.map((item, i) => {
           const pct = (item.amount / maxVal) * 100;
           return (
             <div key={i} className="flex-1 flex flex-col items-center gap-1">
@@ -99,7 +118,7 @@ const BarChart = ({ data = [] }) => {
               </span>
               <div
                 className="w-full bg-gradient-to-t from-indigo-600 to-purple-500 rounded-t-md transition-all duration-500 hover:from-indigo-500 hover:to-purple-400 cursor-pointer min-h-[4px]"
-                style={{ height: `${Math.max(pct, 2)}%` }}
+                style={{ height: `${Math.max(pct, 4)}%` }}
                 title={`${item.month}: ${formatCurrency(item.amount)}`}
               />
               <span className="text-xs text-gray-400 mt-1">{item.month}</span>
@@ -123,7 +142,8 @@ const Dashboard = () => {
         const { data } = await api.get('/dashboard/stats');
         setStats(data);
       } catch (err) {
-        setError(err.response?.data?.message || 'Failed to load dashboard data.');
+        console.error('Failed to load dashboard stats:', err);
+        setError(err.response?.data?.message || err.response?.data?.error || 'Failed to load dashboard data.');
       } finally {
         setLoading(false);
       }
@@ -181,13 +201,32 @@ const Dashboard = () => {
 
   const {
     totalEarnings = 0,
-    pendingPayments = 0,
+    pendingPayments,
     completedTransactions = 0,
-    overdueInvoices = 0,
+    overdueInvoices,
     monthlyEarnings = [],
     recentTransactions = [],
     recentInvoices = [],
   } = stats || {};
+
+  // Extract totals and counts safely from primitives or objects
+  const pendingTotal = typeof pendingPayments === 'object' && pendingPayments !== null
+    ? pendingPayments.total
+    : pendingPayments;
+  const pendingCount = typeof pendingPayments === 'object' && pendingPayments !== null
+    ? pendingPayments.count
+    : null;
+
+  const overdueTotal = typeof overdueInvoices === 'object' && overdueInvoices !== null
+    ? overdueInvoices.total
+    : overdueInvoices;
+  const overdueCount = typeof overdueInvoices === 'object' && overdueInvoices !== null
+    ? overdueInvoices.count
+    : null;
+
+  const completedCount = typeof completedTransactions === 'object' && completedTransactions !== null
+    ? completedTransactions.count || 0
+    : completedTransactions;
 
   return (
     <div className="min-h-screen bg-gray-50 p-6 lg:p-8">
@@ -213,7 +252,8 @@ const Dashboard = () => {
           />
           <StatCard
             label="Pending Payments"
-            value={formatCurrency(pendingPayments)}
+            value={formatCurrency(pendingTotal)}
+            sub={pendingCount ? `${pendingCount} invoice${pendingCount !== 1 ? 's' : ''}` : undefined}
             color="text-yellow-700"
             iconBg="bg-yellow-100"
             icon={
@@ -224,7 +264,8 @@ const Dashboard = () => {
           />
           <StatCard
             label="Completed Transactions"
-            value={completedTransactions}
+            value={completedCount}
+            sub="all time"
             color="text-blue-700"
             iconBg="bg-blue-100"
             icon={
@@ -235,7 +276,8 @@ const Dashboard = () => {
           />
           <StatCard
             label="Overdue Invoices"
-            value={overdueInvoices}
+            value={formatCurrency(overdueTotal)}
+            sub={overdueCount ? `${overdueCount} overdue` : undefined}
             color="text-red-700"
             iconBg="bg-red-100"
             icon={
@@ -269,12 +311,18 @@ const Dashboard = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {recentTransactions.length > 0 ? (
+                  {recentTransactions && recentTransactions.length > 0 ? (
                     recentTransactions.slice(0, 5).map((txn, i) => (
-                      <tr key={txn._id || i} className="hover:bg-gray-50 transition-colors">
-                        <td className="px-6 py-4 text-sm text-gray-800 font-medium">{txn.description || txn.clientName || '—'}</td>
-                        <td className="px-6 py-4 text-sm text-gray-800">{formatCurrency(txn.amount)}</td>
-                        <td className="px-6 py-4 text-sm text-gray-500">{formatDate(txn.date || txn.createdAt)}</td>
+                      <tr key={txn.id || txn._id || i} className="hover:bg-gray-50 transition-colors">
+                        <td className="px-6 py-4 text-sm text-gray-800 font-medium">
+                          {txn.description || txn.client_name || txn.clientName || '—'}
+                        </td>
+                        <td className="px-6 py-4 text-sm text-gray-800 font-semibold">
+                          {formatCurrency(txn.amount)}
+                        </td>
+                        <td className="px-6 py-4 text-sm text-gray-500">
+                          {formatDate(txn.transaction_date || txn.date || txn.created_at || txn.createdAt)}
+                        </td>
                         <td className="px-6 py-4">{statusBadge(txn.status)}</td>
                       </tr>
                     ))
@@ -306,12 +354,18 @@ const Dashboard = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {recentInvoices.length > 0 ? (
+                  {recentInvoices && recentInvoices.length > 0 ? (
                     recentInvoices.slice(0, 5).map((inv, i) => (
-                      <tr key={inv._id || i} className="hover:bg-gray-50 transition-colors">
-                        <td className="px-6 py-4 text-sm text-gray-800 font-medium">{inv.invoiceNumber || `INV-${String(i + 1).padStart(3, '0')}`}</td>
-                        <td className="px-6 py-4 text-sm text-gray-500">{inv.clientName || inv.client?.name || '—'}</td>
-                        <td className="px-6 py-4 text-sm text-gray-800">{formatCurrency(inv.amount || inv.total)}</td>
+                      <tr key={inv.id || inv._id || i} className="hover:bg-gray-50 transition-colors">
+                        <td className="px-6 py-4 text-sm text-indigo-600 font-medium">
+                          {inv.invoice_number || inv.invoiceNumber || `INV-${String(i + 1).padStart(3, '0')}`}
+                        </td>
+                        <td className="px-6 py-4 text-sm text-gray-600">
+                          {inv.client_name || inv.clientName || inv.client?.name || '—'}
+                        </td>
+                        <td className="px-6 py-4 text-sm text-gray-800 font-semibold">
+                          {formatCurrency(inv.total_amount || inv.amount || inv.total || 0)}
+                        </td>
                         <td className="px-6 py-4">{statusBadge(inv.status)}</td>
                       </tr>
                     ))

@@ -25,30 +25,43 @@ async function getUserFinancialData(userId) {
   );
   const [milestones] = await pool.query('SELECT * FROM milestones WHERE user_id = ?', [userId]);
 
-  const [totalEarnings] = await pool.query(
-    `SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE user_id = ? AND status = 'completed'`,
-    [userId]
-  );
+  // Compute earnings dynamically from transactions to avoid dialect-specific SQL date math
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth();
+  const lastMonthDate = new Date(currentYear, currentMonth - 1, 1);
+  const lastYear = lastMonthDate.getFullYear();
+  const lastMonth = lastMonthDate.getMonth();
 
-  const [thisMonthEarnings] = await pool.query(
-    `SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE user_id = ? AND status = 'completed' AND MONTH(transaction_date) = MONTH(CURDATE()) AND YEAR(transaction_date) = YEAR(CURDATE())`,
-    [userId]
-  );
+  let totalEarnings = 0;
+  let thisMonthEarnings = 0;
+  let lastMonthEarnings = 0;
 
-  const [lastMonthEarnings] = await pool.query(
-    `SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE user_id = ? AND status = 'completed' AND MONTH(transaction_date) = MONTH(DATE_SUB(CURDATE(), INTERVAL 1 MONTH)) AND YEAR(transaction_date) = YEAR(DATE_SUB(CURDATE(), INTERVAL 1 MONTH))`,
-    [userId]
-  );
+  for (const t of (transactions || [])) {
+    if (t.status === 'completed') {
+      const amt = Number(t.amount) || 0;
+      totalEarnings += amt;
+      if (t.transaction_date) {
+        const tDate = new Date(t.transaction_date);
+        if (tDate.getFullYear() === currentYear && tDate.getMonth() === currentMonth) {
+          thisMonthEarnings += amt;
+        }
+        if (tDate.getFullYear() === lastYear && tDate.getMonth() === lastMonth) {
+          lastMonthEarnings += amt;
+        }
+      }
+    }
+  }
 
   return {
-    invoices,
-    transactions,
-    clients,
-    projects,
-    milestones,
-    totalEarnings: totalEarnings[0].total,
-    thisMonthEarnings: thisMonthEarnings[0].total,
-    lastMonthEarnings: lastMonthEarnings[0].total
+    invoices: invoices || [],
+    transactions: transactions || [],
+    clients: clients || [],
+    projects: projects || [],
+    milestones: milestones || [],
+    totalEarnings: totalEarnings.toFixed(2),
+    thisMonthEarnings: thisMonthEarnings.toFixed(2),
+    lastMonthEarnings: lastMonthEarnings.toFixed(2)
   };
 }
 
@@ -91,6 +104,51 @@ ${data.transactions.slice(0, 10).map(t => `- $${t.amount} from ${t.client_name |
   `.trim();
 }
 
+// Helper to call Gemini API safely with automatic fallback
+async function callGemini(prompt, systemInstruction = '', maxTokens = 1024) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey || apiKey === 'your_gemini_api_key') {
+    return null;
+  }
+
+  const model = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+
+  const contents = [];
+  if (systemInstruction) {
+    contents.push({ role: 'user', parts: [{ text: `System Instruction:\n${systemInstruction}\n\nTask:\n${prompt}` }] });
+  } else {
+    contents.push({ role: 'user', parts: [{ text: prompt }] });
+  }
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents,
+        generationConfig: {
+          temperature: 0.7,
+          maxOutputTokens: maxTokens
+        }
+      })
+    });
+
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => '');
+      console.warn(`Gemini API returned status ${res.status}:`, errBody.slice(0, 150));
+      return null;
+    }
+
+    const data = await res.json();
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    return text || null;
+  } catch (err) {
+    console.warn('Gemini API fetch error:', err.message);
+    return null;
+  }
+}
+
 // AI Chat endpoint
 router.post('/chat', authenticateToken, async (req, res) => {
   try {
@@ -103,35 +161,21 @@ router.post('/chat', authenticateToken, async (req, res) => {
     const financialData = await getUserFinancialData(req.user.id);
     const context = buildFinancialContext(financialData);
 
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey || apiKey === 'your_gemini_api_key') {
-      // Fallback: use rule-based responses if no API key
-      const response = generateFallbackResponse(message, financialData);
-      return res.json({ response, source: 'local' });
-    }
-
     const systemPrompt = `You are an AI financial assistant for a freelancer. You help them understand their payment data, answer questions about earnings, invoices, clients, and projects. Be concise, helpful, and use specific numbers from the data. Format currency values with $ sign. If asked about something not in the data, say so politely.
 
 Here is the freelancer's current financial data:
 
 ${context}`;
 
-    const geminiResponse = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: `${systemPrompt}\n\nUser Question: ${message}` }] }],
-          generationConfig: { temperature: 0.7, maxOutputTokens: 1024 }
-        })
-      }
-    );
+    const geminiText = await callGemini(message, systemPrompt, 1024);
 
-    const geminiData = await geminiResponse.json();
-    const aiResponse = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || 'Sorry, I could not generate a response.';
+    if (geminiText) {
+      return res.json({ response: geminiText, source: 'gemini' });
+    }
 
-    res.json({ response: aiResponse, source: 'gemini' });
+    // Fallback: rule-based engine using live database stats
+    const fallbackResponse = generateFallbackResponse(message, financialData);
+    return res.json({ response: fallbackResponse, source: 'local' });
   } catch (error) {
     console.error('AI Chat error:', error);
     res.status(500).json({ error: 'Failed to process AI request' });
@@ -149,21 +193,6 @@ router.post('/generate-invoice', authenticateToken, async (req, res) => {
 
     const [clients] = await pool.query('SELECT id, name, email FROM clients WHERE user_id = ?', [req.user.id]);
 
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey || apiKey === 'your_gemini_api_key') {
-      return res.json({
-        suggestion: {
-          description: description,
-          items: [{ description: description, quantity: 1, rate: 0, amount: 0 }],
-          tax_rate: 0,
-          notes: 'Generated from description. Please fill in the amounts.',
-          due_date: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
-        },
-        clients,
-        source: 'local'
-      });
-    }
-
     const prompt = `Based on this description of freelance work, generate a structured invoice. Return ONLY valid JSON (no markdown, no code blocks) with these fields:
 {
   "description": "brief invoice description",
@@ -175,35 +204,26 @@ router.post('/generate-invoice', authenticateToken, async (req, res) => {
 
 Work description: "${description}"
 
-Available clients: ${clients.map(c => `${c.name} (${c.email})`).join(', ')}`;
+Available clients: ${(clients || []).map(c => `${c.name} (${c.email})`).join(', ')}`;
 
-    const geminiResponse = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.3, maxOutputTokens: 1024 }
-        })
-      }
-    );
-
-    const geminiData = await geminiResponse.json();
-    let aiText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || '';
-
-    // Clean up potential markdown code blocks
-    aiText = aiText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    const geminiText = await callGemini(prompt, '', 1024);
 
     let suggestion;
-    try {
-      suggestion = JSON.parse(aiText);
-    } catch {
+    if (geminiText) {
+      const cleaned = geminiText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+      try {
+        suggestion = JSON.parse(cleaned);
+      } catch {
+        suggestion = null;
+      }
+    }
+
+    if (!suggestion) {
       suggestion = {
         description: description,
         items: [{ description: description, quantity: 1, rate: 0, amount: 0 }],
         tax_rate: 0,
-        notes: 'AI could not parse the description. Please fill in manually.',
+        notes: 'Generated from description. Please customize amounts and details.',
         suggested_due_days: 30
       };
     }
@@ -212,7 +232,7 @@ Available clients: ${clients.map(c => `${c.name} (${c.email})`).join(', ')}`;
       suggestion.due_date = new Date(Date.now() + suggestion.suggested_due_days * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
     }
 
-    res.json({ suggestion, clients, source: 'gemini' });
+    res.json({ suggestion, clients: clients || [], source: geminiText ? 'gemini' : 'local' });
   } catch (error) {
     console.error('AI Invoice Generator error:', error);
     res.status(500).json({ error: 'Failed to generate invoice' });
@@ -225,12 +245,6 @@ router.post('/insights', authenticateToken, async (req, res) => {
     const financialData = await getUserFinancialData(req.user.id);
     const context = buildFinancialContext(financialData);
 
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey || apiKey === 'your_gemini_api_key') {
-      const insights = generateFallbackInsights(financialData);
-      return res.json({ insights, source: 'local' });
-    }
-
     const prompt = `Analyse this freelancer's financial data and provide actionable insights. Include:
 1. Monthly income trend analysis
 2. Payment pattern observations (which clients pay on time, which are late)
@@ -242,22 +256,14 @@ Be specific with numbers and percentages. Format as a clear, structured report.
 
 ${context}`;
 
-    const geminiResponse = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.5, maxOutputTokens: 2048 }
-        })
-      }
-    );
+    const geminiText = await callGemini(prompt, '', 2048);
 
-    const geminiData = await geminiResponse.json();
-    const insights = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || 'Could not generate insights.';
+    if (geminiText) {
+      return res.json({ insights: geminiText, source: 'gemini' });
+    }
 
-    res.json({ insights, source: 'gemini' });
+    const insights = generateFallbackInsights(financialData);
+    res.json({ insights, source: 'local' });
   } catch (error) {
     console.error('AI Insights error:', error);
     res.status(500).json({ error: 'Failed to generate insights' });
@@ -275,21 +281,17 @@ router.post('/reminders', authenticateToken, async (req, res) => {
       [req.user.id, now]
     );
 
-    if (overdueInvoices.length === 0) {
+    if (!overdueInvoices || overdueInvoices.length === 0) {
       return res.json({ reminders: [], message: 'No overdue invoices found!' });
     }
 
-    const apiKey = process.env.GEMINI_API_KEY;
     const reminders = [];
 
     for (const invoice of overdueInvoices) {
       const daysOverdue = Math.floor((now - new Date(invoice.due_date)) / (1000 * 60 * 60 * 24));
-      let reminderMessage;
+      let reminderMessage = null;
 
-      if (!apiKey || apiKey === 'your_gemini_api_key') {
-        reminderMessage = `Hi ${invoice.client_name},\n\nThis is a friendly reminder that Invoice ${invoice.invoice_number} for $${invoice.total_amount} was due on ${new Date(invoice.due_date).toLocaleDateString()}. It is now ${daysOverdue} day(s) overdue.\n\nPlease arrange payment at your earliest convenience. If you have already made the payment, please disregard this message.\n\nThank you for your business!\n\nBest regards`;
-      } else {
-        const prompt = `Write a professional but friendly payment reminder email for:
+      const prompt = `Write a professional but friendly payment reminder email for:
 - Client Name: ${invoice.client_name}
 - Invoice Number: ${invoice.invoice_number}
 - Amount Due: $${invoice.total_amount}
@@ -298,24 +300,10 @@ router.post('/reminders', authenticateToken, async (req, res) => {
 
 The tone should be ${daysOverdue > 30 ? 'firm but professional' : daysOverdue > 14 ? 'polite but clear' : 'friendly and gentle'}. Keep it concise.`;
 
-        try {
-          const geminiResponse = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
-            {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                contents: [{ parts: [{ text: prompt }] }],
-                generationConfig: { temperature: 0.7, maxOutputTokens: 512 }
-              })
-            }
-          );
+      reminderMessage = await callGemini(prompt, '', 512);
 
-          const geminiData = await geminiResponse.json();
-          reminderMessage = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || '';
-        } catch {
-          reminderMessage = `Hi ${invoice.client_name},\n\nThis is a reminder about Invoice ${invoice.invoice_number} for $${invoice.total_amount}, which was due on ${new Date(invoice.due_date).toLocaleDateString()} (${daysOverdue} days ago). Please arrange payment at your convenience.\n\nThank you!`;
-        }
+      if (!reminderMessage) {
+        reminderMessage = `Hi ${invoice.client_name},\n\nThis is a friendly reminder that Invoice ${invoice.invoice_number} for $${invoice.total_amount} was due on ${new Date(invoice.due_date).toLocaleDateString()}. It is now ${daysOverdue} day(s) overdue.\n\nPlease arrange payment at your earliest convenience. If you have already made the payment, please disregard this message.\n\nThank you for your business!\n\nBest regards`;
       }
 
       // Save reminder
@@ -341,7 +329,7 @@ The tone should be ${daysOverdue > 30 ? 'firm but professional' : daysOverdue > 
       });
     }
 
-    res.json({ reminders, source: apiKey && apiKey !== 'your_gemini_api_key' ? 'gemini' : 'local' });
+    res.json({ reminders, source: 'ai' });
   } catch (error) {
     console.error('Smart Reminders error:', error);
     res.status(500).json({ error: 'Failed to generate reminders' });

@@ -29,6 +29,9 @@ router.post('/create-order', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Invoice is already paid' });
     }
 
+    const clientBase = (process.env.CLIENT_URL || 'http://localhost:3000').replace(/\/+$/, '');
+    const clientOrigin = clientBase.startsWith('http') ? clientBase : `https://${clientBase}`;
+
     const request = new paypal.orders.OrdersCreateRequest();
     request.prefer('return=representation');
     request.requestBody({
@@ -45,8 +48,8 @@ router.post('/create-order', authenticateToken, async (req, res) => {
         brand_name: 'Freelancer Payment Manager',
         landing_page: 'NO_PREFERENCE',
         user_action: 'PAY_NOW',
-        return_url: `${process.env.CLIENT_URL || 'http://localhost:3000'}/payment/success`,
-        cancel_url: `${process.env.CLIENT_URL || 'http://localhost:3000'}/payment/cancel`
+        return_url: new URL('/payment/success', clientOrigin).toString(),
+        cancel_url: new URL('/payment/cancel', clientOrigin).toString()
       }
     });
 
