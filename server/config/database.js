@@ -282,6 +282,8 @@ async function runPostgresQuery(sql, params = []) {
     return p;
   });
 
+  const isSelect = /^\s*SELECT\b/i.test(adaptedSql);
+
   try {
     const res = await pgPool.query(adaptedSql, normalizedParams);
     const rows = res.rows || [];
@@ -290,7 +292,7 @@ async function runPostgresQuery(sql, params = []) {
       insertId,
       affectedRows: res.rowCount || 0
     };
-    return [rows.length > 0 && /^\s*SELECT\b/i.test(adaptedSql) ? rows : (rows[0]?.id ? [resultObj] : resultObj), res.fields];
+    return [isSelect ? rows : resultObj, res.fields];
   } catch (err) {
     console.error('Postgres query error:', adaptedSql, err);
     throw err;
@@ -323,7 +325,7 @@ const pool = {
   getConnection: async () => {
     return {
       query: pool.query,
-      release: () => {}
+      release: () => { }
     };
   }
 };
